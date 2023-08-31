@@ -221,29 +221,33 @@ impl Ructe {
         let mut f = Vec::with_capacity(512);
         let outdir = outdir.join("templates");
         create_dir_all(&outdir)?;
-        f.write_all(b"pub mod templates {\n")?;
-        write_if_changed(
-            &outdir.join("_utils.rs"),
-            include_bytes!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/src/templates/utils.rs"
-            )),
-        )?;
         f.write_all(
-            b"#[doc(hidden)]\nmod _utils;\n\
-              #[doc(inline)]\npub use self::_utils::*;\n\n",
+            b"pub mod templates {\n\
+              #[doc(hidden)]\n\
+              mod _utils {\n",
+        )?;
+        f.write(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/templates/utils.rs"
+        )))?;
+        f.write_all(
+            b"}\n\n\
+              #[doc(inline)]\n\
+              pub use self::_utils::*;\n\n",
         )?;
         if cfg!(feature = "warp03") {
-            write_if_changed(
-                &outdir.join("_utils_warp03.rs"),
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/src/templates/utils_warp03.rs"
-                )),
+            f.write(
+                b"#[doc(hidden)]\n\
+                  mod _utils_warp03 {\n",
             )?;
+            f.write(include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/templates/utils_warp03.rs"
+            )))?;
             f.write_all(
-                b"#[doc(hidden)]\nmod _utils_warp03;\n\
-                  #[doc(inline)]\npub use self::_utils_warp03::*;\n\n",
+                b"}\n\n\
+                  #[doc(inline)]\n\
+                  pub use self::_utils_warp03::*;\n\n",
             )?;
         }
         Ok(Ructe { f, outdir })
@@ -268,7 +272,7 @@ impl Ructe {
     where
         P: AsRef<Path>,
     {
-        handle_entries(&mut self.f, indir.as_ref(), &self.outdir)
+        handle_entries(&mut self.f, indir.as_ref())
     }
 
     /// Create a [`StaticFiles`] handler for this Ructe instance.
@@ -323,19 +327,14 @@ fn write_if_changed(path: &Path, content: &[u8]) -> io::Result<()> {
     write(path, content)
 }
 
-fn handle_entries(
-    f: &mut impl Write,
-    indir: &Path,
-    outdir: &Path,
-) -> Result<()> {
+fn handle_entries(f: &mut impl Write, indir: &Path) -> Result<()> {
     println!("cargo:rerun-if-changed={}", indir.display());
     for entry in read_dir(indir)? {
         let entry = entry?;
         let path = entry.path();
         if entry.file_type()?.is_dir() {
             if let Some(filename) = entry.file_name().to_str() {
-                let outdir = outdir.join(filename);
-                create_dir_all(&outdir)?;
+                writeln!(f, "pub mod {filename} {{\n")?;
                 let mut modrs = Vec::with_capacity(512);
                 modrs.write_all(
                     b"#[allow(renamed_and_removed_lints)]\n\
@@ -344,9 +343,8 @@ fn handle_entries(
                       #[allow(unused)]\n\
                       use super::{Html,ToHtml};\n",
                 )?;
-                handle_entries(&mut modrs, &path, &outdir)?;
-                write_if_changed(&outdir.join("mod.rs"), &modrs)?;
-                writeln!(f, "pub mod {filename};\n")?;
+                handle_entries(f, &path)?;
+                f.write(b"}\n")?;
             }
         } else if let Some(filename) = entry.file_name().to_str() {
             for suffix in &[".rs.html", ".rs.svg", ".rs.xml"] {
@@ -355,13 +353,18 @@ fn handle_entries(
                     let prename = &filename[..filename.len() - suffix.len()];
                     let name =
                         format!("{prename}_{}", &suffix[".rs.".len()..]);
-                    if handle_template(&name, &path, outdir)? {
+                    if let Some(module) = handle_template(&name, &path)? {
                         writeln!(
                             f,
                             "#[doc(hidden)]\n\
-                             mod template_{name};\n\
+                             mod template_{name} {{"
+                        )?;
+                        f.write(&module)?;
+                        writeln!(
+                            f,
+                            "}}\n\
                              #[doc(inline)]\n\
-                             pub use self::template_{name}::{name};\n",
+                             pub use self::template_{name}::{name};",
                         )?;
                     }
                 }
@@ -371,11 +374,7 @@ fn handle_entries(
     Ok(())
 }
 
-fn handle_template(
-    name: &str,
-    path: &Path,
-    outdir: &Path,
-) -> io::Result<bool> {
+fn handle_template(name: &str, path: &Path) -> io::Result<Option<Vec<u8>>> {
     let mut input = File::open(path)?;
     let mut buf = Vec::new();
     input.read_to_end(&mut buf)?;
@@ -383,16 +382,12 @@ fn handle_template(
         Ok((_, t)) => {
             let mut data = Vec::new();
             t.write_rust(&mut data, name)?;
-            write_if_changed(
-                &outdir.join(format!("template_{name}.rs")),
-                &data,
-            )?;
-            Ok(true)
+            Ok(Some(data))
         }
         Err(error) => {
             println!("cargo:warning=Template parse error in {path:?}:");
             show_errors(&mut io::stdout(), &buf, &error, "cargo:warning=");
-            Ok(false)
+            Ok(None)
         }
     }
 }
