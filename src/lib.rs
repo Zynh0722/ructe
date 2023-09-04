@@ -335,8 +335,7 @@ fn handle_entries(f: &mut impl Write, indir: &Path) -> Result<()> {
         if entry.file_type()?.is_dir() {
             if let Some(filename) = entry.file_name().to_str() {
                 writeln!(f, "pub mod {filename} {{\n")?;
-                let mut modrs = Vec::with_capacity(512);
-                modrs.write_all(
+                f.write_all(
                     b"#[allow(renamed_and_removed_lints)]\n\
                       #[cfg_attr(feature=\"cargo-clippy\", \
                       allow(useless_attribute))]\n\
